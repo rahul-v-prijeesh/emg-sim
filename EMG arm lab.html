@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>EMG arm lab</title>
+<style>
+:root{--bg:#fff;--fg:#1c1c1c;--mut:#666;--card:#f4f4f2;--line:#d8d8d4;--acc:#c2410c;--ok:#15803d;--bad:#b91c1c;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#171716;--fg:#ececea;--mut:#9a9a94;--card:#232321;--line:#3a3a36;--acc:#fb923c;--ok:#4ade80;--bad:#f87171;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#171716;--fg:#ececea;--mut:#9a9a94;--card:#232321;--line:#3a3a36;--acc:#fb923c;--ok:#4ade80;--bad:#f87171;color-scheme:dark}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1000px;margin:0 auto;padding:14px}
+h1{font-size:18px;margin:0 0 2px}h2{font-size:13px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.sub{color:var(--mut);margin:0 0 12px}
+.row{display:flex;flex-wrap:wrap;gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;flex:1 1 300px;min-width:0}
+svg{width:100%;height:auto;display:block}
+label{display:flex;align-items:center;gap:8px;margin:3px 0}label span{width:92px;flex:none;color:var(--mut)}label output{width:40px;text-align:right;font-variant-numeric:tabular-nums}
+input[type=range]{flex:1;min-width:0}
+button,select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:5px 10px;cursor:pointer}
+button.p{background:var(--acc);border-color:var(--acc);color:#fff}
+.btns{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{padding:3px 6px;text-align:right;border-bottom:1px solid var(--line)}th:first-child,td:first-child{text-align:left}
+.big{font-size:20px;font-weight:600}.ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}
+.wrap{overflow-x:auto}
+</style></head><body><main>
+<h1>EMG arm lab</h1>
+<p class="sub">A simulated forearm: you move the fingers, muscles fire, the sensors around the arm pick it up. Train on one arm position, move the arm, hide some sensors, and the model has to name the state and guess the hidden sensors. <b>Simulated data, not a real arm.</b></p>
+<div class="row">
+ <div class="card"><h2>Arm (cross-section and hand)</h2><svg id="arm" viewBox="0 0 480 250"></svg></div>
+ <div class="card"><h2>Model says</h2>
+  <div>Your fingers: <span id="truth" class="big"></span></div>
+  <div>Model: <span id="pred" class="big"></span> <span id="conf" class="mut"></span></div>
+  <div class="wrap"><table id="tab"></table></div>
+  <p class="mut" id="trained" style="margin:8px 0 0"></p></div>
+</div>
+<div class="row" style="margin-top:12px">
+ <div class="card"><h2>Fingers (0 straight, 1 fully bent)</h2><div id="fing"></div>
+  <div class="btns" id="pre"></div></div>
+ <div class="card"><h2>Arm position</h2>
+  <label><span>Rotation</span><input type="range" id="rot" min="-90" max="90" value="0" step="5"><output id="rotO"></output></label>
+  <label><span>Wrist angle</span><input type="range" id="wr" min="-1" max="1" value="0" step="0.1"><output id="wrO"></output></label>
+  <label><span>Skin contact</span><input type="range" id="g" min="0.5" max="1.5" value="1" step="0.05"><output id="gO"></output></label>
+  <h2 style="margin-top:12px">Sensors</h2>
+  <label><span>Count</span><select id="n"><option>3</option><option>4</option><option>5</option><option selected>6</option></select></label>
+  <div id="giv" class="btns"></div>
+  <div class="btns"><button class="p" id="train">Train on this arm position</button><button id="test">Test here</button><button id="sweep">Sweep rotation</button></div></div>
+</div>
+<div class="card" style="margin-top:12px"><h2>Test results</h2><div id="res" class="mut">Train on the neutral arm is done at start. Move the rotation slider, hide sensors, press Test or Sweep.</div></div>
+</main>
+<script>
+//CORE
+const GESTS=['REST','OPEN','CLOSE','PINCH','INDEX'];
+const PRE={REST:[.35,.35,.35,.35,.35],OPEN:[0,0,0,0,0],CLOSE:[1,1,1,1,1],PINCH:[.8,.8,.35,.35,.35],INDEX:[1,0,1,1,1]};
+const FN=['Thumb','Index','Middle','Ring','Little'];
+const FA=[-55,-25,5,30,55],EA=[235,205,180,155,130],DF=[.7,.9,1,.9,.6],DE=[.8,.9,1,.9,.8];
+const sq=x=>x*x,clamp=(a,l,h)=>Math.min(h,Math.max(l,a));
+function randn(){return Math.sqrt(-2*Math.log(1-Math.random()))*Math.cos(6.283185307*Math.random())}
+const K=d=>{d=((d%360)+540)%360-180;return 1/(1+sq(d/40))};
+function acts(v,wr){const f=[],e=[];for(let i=0;i<5;i++){f[i]=Math.max(0,(v[i]-.35)/.65)*(1+.5*wr)+.03;e[i]=Math.max(0,(.35-v[i])/.35)*(1-.5*wr)+.03}return[f,e]}
+function sense(v,P,N){const[f,e]=acts(v,P.wr),o=[];for(let j=0;j<N;j++){const ph=360*j/N;let s=0;
+ for(let i=0;i<5;i++){s+=sq(f[i]*DF[i]*K(FA[i]+P.rot-ph))+sq(e[i]*DE[i]*K(EA[i]+P.rot-ph))}
+ o.push(Math.sqrt(sq(60*P.g)*s+9)*Math.exp(.08*randn()))}return o}
+function sample(v0,P,N){const v=v0.map(a=>clamp(a+.08*randn(),0,1));return{v,x:sense(v,P,N).map(Math.log)}}
+function nearest(v){let b=0,bd=1e9;GESTS.forEach((g,i)=>{const d=v.reduce((s,a,k)=>s+sq(a-PRE[g][k]),0);if(d<bd){bd=d;b=i}});return b}
+function chol(A){const n=A.length,L=A.map(r=>r.map(()=>0));for(let i=0;i<n;i++)for(let j=0;j<=i;j++){let s=A[i][j];for(let k=0;k<j;k++)s-=L[i][k]*L[j][k];L[i][j]=i==j?Math.sqrt(s):s/L[j][j]}return L}
+function fsub(L,b){const y=[];for(let i=0;i<b.length;i++){let s=b[i];for(let k=0;k<i;k++)s-=L[i][k]*y[k];y[i]=s/L[i][i]}return y}
+function bsub(L,y){const n=y.length,x=[];for(let i=n-1;i>=0;i--){let s=y[i];for(let k=i+1;k<n;k++)s-=L[k][i]*x[k];x[i]=s/L[i][i]}return x}
+function train(P,N,T=250){const M={N,P:{...P},cls:[]};for(const c of GESTS){const X=[];for(let n=0;n<T;n++)X.push(sample(PRE[c],P,N).x);
+ const mu=Array(N).fill(0);X.forEach(x=>x.forEach((a,i)=>mu[i]+=a/T));
+ const S=Array.from({length:N},()=>Array(N).fill(0));X.forEach(x=>{for(let i=0;i<N;i++)for(let j=0;j<N;j++)S[i][j]+=(x[i]-mu[i])*(x[j]-mu[j])/(T-1)});
+ for(let i=0;i<N;i++)S[i][i]+=2e-3;M.cls.push({mu,S})}return M}
+function infer(M,x,obs){const H=[...Array(M.N).keys()].filter(i=>!obs.includes(i)),lp=[],hp=[];
+ M.cls.forEach(c=>{const A=obs.map(i=>obs.map(j=>c.S[i][j])),L=chol(A),d=obs.map(i=>x[i]-c.mu[i]),z=fsub(L,d);let ld=0;L.forEach((r,i)=>ld+=Math.log(r[i]));
+  lp.push(-.5*z.reduce((a,b)=>a+b*b,0)-ld);const w=bsub(L,z);hp.push(H.map(h=>c.mu[h]+obs.reduce((s,o,k)=>s+c.S[h][o]*w[k],0)))});
+ const m=Math.max(...lp),e=lp.map(a=>Math.exp(a-m)),s=e.reduce((a,b)=>a+b),post=e.map(a=>a/s);
+ return{post,H,hid:H.map((h,k)=>post.reduce((a,p,ci)=>a+p*hp[ci][k],0))}}
+function evalAt(M,P,obs,T=300){let ok=0,er=0,ne=0;for(let t=0;t<T;t++){const c=Math.floor(Math.random()*5),s=sample(PRE[GESTS[c]],P,M.N),r=infer(M,s.x,obs);
+ if(r.post.indexOf(Math.max(...r.post))==nearest(s.v))ok++;r.H.forEach((h,k)=>{er+=Math.abs(r.hid[k]-s.x[h]);ne++})}
+ return{acc:100*ok/T,err:ne?100*(Math.exp(er/ne)-1):0}}
+//ENDCORE
+const $=id=>document.getElementById(id);
+let v=PRE.REST.slice(),P={rot:0,wr:0,g:1},N=6,given=new Set([0,1,2,3]),M=null,Mp=null;
+function defaultGiven(){given=new Set([...Array(N).keys()].slice(0,N-(N>3?2:1)))}
+function fresh(){M=train(P,N);Mp={...P};$('trained').textContent=`Trained at rotation ${Mp.rot}°, wrist ${Mp.wr}, contact ${Mp.g}, ${N} sensors.`}
+function build(){
+ $('fing').innerHTML=FN.map((n,i)=>`<label><span>${n}</span><input type="range" min="0" max="1" step="0.01" value="${v[i]}" data-f="${i}"><output></output></label>`).join('');
+ $('fing').querySelectorAll('input').forEach(e=>e.oninput=()=>{v[+e.dataset.f]=+e.value});
+ $('pre').innerHTML=GESTS.map(g=>`<button data-g="${g}">${g}</button>`).join('');
+ $('pre').querySelectorAll('button').forEach(b=>b.onclick=()=>{v=PRE[b.dataset.g].slice();build()});
+ $('giv').innerHTML=[...Array(N).keys()].map(i=>`<button data-s="${i}">S${i+1}</button>`).join('');
+ $('giv').querySelectorAll('button').forEach(b=>b.onclick=()=>{const i=+b.dataset.s;if(given.has(i)){if(given.size>1)given.delete(i)}else given.add(i);paintGiv()});
+ paintGiv()}
+function paintGiv(){$('giv').querySelectorAll('button').forEach(b=>{const on=given.has(+b.dataset.s);b.className=on?'p':'';b.title=on?'given to the model':'hidden: model must guess'});}
+function hand(){const x0=250,y0=215;let s=`<rect x="${x0}" y="${y0-70}" width="130" height="75" rx="14" fill="none" stroke="currentColor" stroke-width="2"/>`;
+ const base=[[x0+8,y0-48,-35],[x0+30,y0-70,0],[x0+60,y0-72,0],[x0+88,y0-70,0],[x0+116,y0-66,0]],len=[34,38,42,38,30];
+ for(let i=0;i<5;i++){let [bx,by,rot0]=base[i],a=v[i]*85,g=`<g transform="translate(${bx} ${by}) rotate(${rot0})">`,l=len[i]/ (i?1:1.1);
+  for(let k=0;k<3;k++){g+=`<rect x="-5" y="${-l*.9}" width="10" height="${l*.9}" rx="5" fill="var(--acc)" opacity=".85"/><g transform="translate(0 ${-l*.9}) rotate(${a*(k?1.1:.9)})">`}
+  s+=g+'</g></g></g></g>'}
+ return s}
+function draw(x,obs,res){let s='';const cx=115,cy=118,R=78;
+ s+=`<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="var(--line)" stroke-width="2"/>`;
+ const[f,e]=acts(v,P.wr),pos=(a,r)=>[cx+r*Math.sin(a*Math.PI/180),cy-r*Math.cos(a*Math.PI/180)];
+ for(let i=0;i<5;i++){[[FA[i],f[i],'#e0603a'],[EA[i],e[i],'#3a8ee0']].forEach(([a,act,c])=>{const[px,py]=pos(a+P.rot,52);s+=`<circle cx="${px}" cy="${py}" r="${4+9*clamp(act,0,1)}" fill="${c}" opacity="${.35+.6*clamp(act,0,1)}"/>`})}
+ for(let j=0;j<N;j++){const[px,py]=pos(360*j/N,R+14),t=clamp((x[j]-1.1)/3.9,0,1),g=given.has(j);
+  s+=`<rect x="${px-11}" y="${py-11}" width="22" height="22" rx="5" fill="rgba(230,100,40,${.12+.88*t})" stroke="currentColor" stroke-width="${g?2:1.5}" ${g?'':'stroke-dasharray="3 3"'}/><text x="${px}" y="${py+4}" font-size="11" text-anchor="middle" fill="currentColor">${g?'S'+(j+1):'?'}</text>`}
+ s+=`<text x="${cx}" y="${cy+4}" font-size="10" text-anchor="middle" fill="var(--mut)">palm side up</text>`;
+ return s+hand()}
+function tick(){
+ const x=sense(v,P,N).map(Math.log),obs=[...given].sort((a,b)=>a-b),r=infer(M,x,obs),pi=r.post.indexOf(Math.max(...r.post)),ti=nearest(v);
+ $('arm').innerHTML=draw(x,obs,r);
+ $('truth').textContent=GESTS[ti];$('pred').textContent=GESTS[pi];$('pred').className='big '+(pi==ti?'ok':'bad');$('conf').textContent=`${(100*r.post[pi]).toFixed(0)}% sure`;
+ let t='<tr><th>Sensor</th><th>Role</th><th>Actual</th><th>Guess</th><th>Error</th></tr>';
+ for(let j=0;j<N;j++){const k=r.H.indexOf(j),a=Math.exp(x[j]).toFixed(0);
+  t+=k<0?`<tr><td>S${j+1}</td><td>given</td><td>${a}</td><td class="mut">-</td><td class="mut">-</td></tr>`:`<tr><td>S${j+1}</td><td>hidden</td><td>${a}</td><td>${Math.exp(r.hid[k]).toFixed(0)}</td><td>${(100*(Math.exp(Math.abs(r.hid[k]-x[j]))-1)).toFixed(0)}%</td></tr>`}
+ $('tab').innerHTML=t;
+ $('fing').querySelectorAll('output').forEach((o,i)=>o.textContent=v[i].toFixed(2))}
+function bind(id,key,o){$(id).oninput=()=>{P[key]=+$(id).value;$(o).textContent=$(id).value};$(o).textContent=$(id).value}
+bind('rot','rot','rotO');bind('wr','wr','wrO');bind('g','g','gO');
+$('n').onchange=()=>{N=+$('n').value;defaultGiven();build();fresh()};
+$('train').onclick=()=>{fresh();$('res').innerHTML='Retrained on the current arm position.'};
+function rowOf(label,a,b){return `<tr><td>${label}</td><td>${a.acc.toFixed(1)}%</td><td>${a.err.toFixed(0)}%</td><td>${b.acc.toFixed(1)}%</td><td>${b.err.toFixed(0)}%</td></tr>`}
+const HEAD='<tr><th>Arm rotation</th><th>State right (trained at '+'neutral)</th><th>Hidden-sensor error</th><th>State right (retrained here)</th><th>Hidden-sensor error</th></tr>';
+$('test').onclick=()=>{const obs=[...given],o=evalAt(M,P,obs),b=evalAt(train(P,N),P,obs);
+ $('res').innerHTML=`<div class="wrap"><table>${HEAD.replace('Arm rotation','Now')}${rowOf(`rotation ${P.rot}°, wrist ${P.wr}, contact ${P.g}`,o,b)}</table></div><p class="mut">Left pair: the model trained at rotation ${Mp.rot}°. Right pair: a model retrained on this exact arm position (best case). 300 random trials, given sensors: ${obs.map(i=>'S'+(i+1)).join(', ')}.</p>`};
+$('sweep').onclick=()=>{const obs=[...given];let rows='';for(const rot of [-90,-60,-30,-15,0,15,30,60,90]){const Q={...P,rot};rows+=rowOf(rot+'°',evalAt(M,Q,obs,200),evalAt(train(Q,N,150),Q,obs,200))}
+ $('res').innerHTML=`<div class="wrap"><table>${HEAD}${rows}</table></div><p class="mut">Model trained at rotation ${Mp.rot}°, wrist ${Mp.wr}, contact ${Mp.g}; the other settings stay as set. Given sensors: ${obs.map(i=>'S'+(i+1)).join(', ')}.</p>`};
+if(typeof document!=='undefined'&&document.getElementById('arm')){defaultGiven();build();fresh();setInterval(tick,120);tick()}
+</script></body></html>
